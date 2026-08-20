@@ -1,80 +1,92 @@
-#include <stdio.h>
 #include "preempt_point.h"
 
-#define MAX_TRACE_LEN 256
+#include <stdio.h>
+#include <stdlib.h>
 
-static int trace_ids[MAX_TRACE_LEN];
-static int trace_len = 0;
-static int sequence_number = 0;
+static FILE *trace_stream = NULL;
+static const char *trace_example = NULL;
+static const char *trace_input_label = NULL;
+static unsigned long next_sequence = 0;
+static int trace_active = 0;
 
-/*
- * Clears the current trace before running the program on a new input.
- */
-void reset_trace(void) {
-    trace_len = 0;
-    sequence_number = 0;
-}
+static void csv_write_field(FILE *stream, const char *text) {
+    int must_quote = 0;
 
-/*
- * Records one preemption point.
- *
- * For week 1, the analyzer only needs the ID sequence.
- * The file, line, and function values are still accepted here so that
- * the PREEMPT_POINT macro records source context automatically.
- */
-void log_preempt_point(
-    int id,
-    const char *file,
-    int line,
-    const char *func
-) {
-    if (trace_len < MAX_TRACE_LEN) {
-        trace_ids[trace_len] = id;
-        trace_len++;
+    if (text == NULL) {
+        text = "";
     }
 
-    sequence_number++;
-
-    /*
-     * Uncomment this if you want detailed debugging output:
-     *
-     * fprintf(
-     *     stderr,
-     *     "seq=%d,id=%d,file=%s,line=%d,function=%s\n",
-     *     sequence_number,
-     *     id,
-     *     file,
-     *     line,
-     *     func
-     * );
-     */
-
-    (void)file;
-    (void)line;
-    (void)func;
-}
-
-/*
- * Prints one CSV row:
- *
- * example,input,trace
- *
- * Example:
- * thermostat_iot,7,1-2-6-8-9
- */
-void print_trace_csv(
-    const char *example_name,
-    int input_value
-) {
-    printf("%s,%d,", example_name, input_value);
-
-    for (int i = 0; i < trace_len; i++) {
-        printf("%d", trace_ids[i]);
-
-        if (i + 1 < trace_len) {
-            printf("-");
+    for (const char *p = text; *p != '\0'; p++) {
+        if (*p == ',' || *p == '"' || *p == '\n' || *p == '\r') {
+            must_quote = 1;
+            break;
         }
     }
 
-    printf("\n");
+    if (!must_quote) {
+        fputs(text, stream);
+        return;
+    }
+
+    fputc('"', stream);
+
+    for (const char *p = text; *p != '\0'; p++) {
+        if (*p == '"') {
+            fputc('"', stream);
+        }
+
+        fputc(*p, stream);
+    }
+
+    fputc('"', stream);
+}
+
+void trace_begin(FILE *stream, const char *example, const char *input_label) {
+    if (stream == NULL) {
+        fprintf(stderr, "trace_begin: stream must not be NULL\n");
+        exit(2);
+    }
+
+    trace_stream = stream;
+    trace_example = example;
+    trace_input_label = input_label;
+    next_sequence = 0;
+    trace_active = 1;
+}
+
+void trace_end(void) {
+    if (trace_stream != NULL) {
+        fflush(trace_stream);
+    }
+
+    trace_stream = NULL;
+    trace_example = NULL;
+    trace_input_label = NULL;
+    next_sequence = 0;
+    trace_active = 0;
+}
+
+void log_preempt_point(int id, const char *file, int line, const char *function) {
+    if (!trace_active || trace_stream == NULL) {
+        fprintf(stderr, "log_preempt_point: trace was not started\n");
+        exit(2);
+    }
+
+    csv_write_field(trace_stream, trace_example);
+    fputc(',', trace_stream);
+
+    csv_write_field(trace_stream, trace_input_label);
+    fputc(',', trace_stream);
+
+    fprintf(trace_stream, "%lu,%d,", next_sequence, id);
+
+    csv_write_field(trace_stream, file);
+    fputc(',', trace_stream);
+
+    fprintf(trace_stream, "%d,", line);
+
+    csv_write_field(trace_stream, function);
+    fputc('\n', trace_stream);
+
+    next_sequence++;
 }

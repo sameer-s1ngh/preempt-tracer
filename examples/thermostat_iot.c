@@ -1,71 +1,62 @@
-#include <stdio.h>
-#include <stdlib.h>
 #include "preempt_point.h"
 
+#include <stdio.h>
+#include <stdlib.h>
+
 /*
- * thermostat_iot.c
+ * Point IDs for thermostat:
  *
- * Toy Arduino/IoT-style example.
- *
- * The hidden input is a small integer from 0 to 31.
- * The program treats this input like a simplified sensor/state value.
- *
- * An observer who sees only the PREEMPT_POINT IDs may learn:
- * - whether the temperature is cold, normal, hot, or alert-level
- * - whether the room is occupied
- * - partial information about the loop count
+ * 1 = entry
+ * 2 = heat branch
+ * 3 = comfortable branch
+ * 4 = cool branch
+ * 5 = alert branch
+ * 6 = exit
  */
 
-static void thermostat_logic(int secret) {
-    PREEMPT_POINT(1);  // Start thermostat processing
+static int parse_temperature(const char *text, int *temperature) {
+    char *end = NULL;
+    long value = strtol(text, &end, 10);
 
-    int temperature = secret % 32;
-    int occupied = secret % 2;
-
-    /*
-     * Temperature branch.
-     */
-    if (temperature < 10) {
-        PREEMPT_POINT(2);  // Cold range: heat might turn on
-    } else if (temperature < 22) {
-        PREEMPT_POINT(3);  // Normal range: no major action
-    } else if (temperature < 28) {
-        PREEMPT_POINT(4);  // Hot range: cooling might turn on
-    } else {
-        PREEMPT_POINT(5);  // Alert range: temperature is very high
+    if (text[0] == '\0' || *end != '\0' || value < -40 || value > 80) {
+        return 0;
     }
 
-    /*
-     * Occupancy branch.
-     */
-    if (occupied) {
-        PREEMPT_POINT(6);  // Room is occupied
-    } else {
-        PREEMPT_POINT(7);  // Room is empty
-    }
-
-    /*
-     * Loop count depends on temperature.
-     * Repeated point 8 can leak partial information about temperature % 3.
-     */
-    for (int i = 0; i < temperature % 3; i++) {
-        PREEMPT_POINT(8);  // Fan adjustment loop
-    }
-
-    PREEMPT_POINT(9);  // End thermostat processing
+    *temperature = (int)value;
+    return 1;
 }
 
 int main(int argc, char **argv) {
-    if (argc != 2) {
-        fprintf(stderr, "Usage: %s <secret>\n", argv[0]);
-        return 1;
+    int temperature;
+
+    if (argc != 2 || !parse_temperature(argv[1], &temperature)) {
+        fprintf(stderr, "usage: %s TEMPERATURE\n", argv[0]);
+        return 2;
     }
 
-    int secret = atoi(argv[1]);
+    trace_begin(stdout, "thermostat", argv[1]);
 
-    reset_trace();
-    thermostat_logic(secret);
-    print_trace_csv("thermostat_iot", secret);
+    PREEMPT_POINT(1);
+
+    if (temperature < 18) {
+        PREEMPT_POINT(2);
+        fprintf(stderr, "mode=heat\n");
+    } else if (temperature > 26) {
+        PREEMPT_POINT(4);
+        fprintf(stderr, "mode=cool\n");
+    } else {
+        PREEMPT_POINT(3);
+        fprintf(stderr, "mode=comfortable\n");
+    }
+
+    if (temperature < 0 || temperature > 40) {
+        PREEMPT_POINT(5);
+        fprintf(stderr, "alert=1\n");
+    }
+
+    PREEMPT_POINT(6);
+
+    trace_end();
 
     return 0;
 }

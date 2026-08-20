@@ -1,20 +1,33 @@
-CC=gcc
-CFLAGS=-Wall -Wextra -std=c11 -Iinclude
+CC=cc
+CFLAGS=-std=c11 -O0 -g -Wall -Wextra -Wpedantic -Iinclude
 
-.PHONY: all run clean
+BUILD_DIR=build
 
-all: thermostat_iot packet_filter
+THERMOSTAT=$(BUILD_DIR)/thermostat_iot
+PACKET_FILTER=$(BUILD_DIR)/packet_filter
 
-thermostat_iot: examples/thermostat_iot.c src/preempt_point.c include/preempt_point.h
-	$(CC) $(CFLAGS) examples/thermostat_iot.c src/preempt_point.c -o thermostat_iot
+.PHONY: all run week3 clean check
 
-packet_filter: examples/packet_filter.c src/preempt_point.c include/preempt_point.h
-	$(CC) $(CFLAGS) examples/packet_filter.c src/preempt_point.c -o packet_filter
+all: $(THERMOSTAT) $(PACKET_FILTER)
+
+$(BUILD_DIR):
+	mkdir -p $(BUILD_DIR)
+
+$(THERMOSTAT): src/preempt_point.c examples/thermostat_iot.c include/preempt_point.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) src/preempt_point.c examples/thermostat_iot.c -o $(THERMOSTAT)
+
+$(PACKET_FILTER): src/preempt_point.c examples/packet_filter.c include/preempt_point.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) src/preempt_point.c examples/packet_filter.c -o $(PACKET_FILTER)
 
 run: all
 	python3 scripts/run_all.py
-	python3 scripts/analyze_traces.py
+
+week3: run
+
+check: all
+	./$(THERMOSTAT) 17
+	./$(PACKET_FILTER) 1 24
 
 clean:
-	rm -f thermostat_iot packet_filter
-	rm -f results/traces.csv
+	rm -rf $(BUILD_DIR)
+	rm -f results/week3_traces.csv

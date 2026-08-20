@@ -1,101 +1,140 @@
-# Preempt Tracer
+# Preempt Tracer — Week 3
 
-This project explores empirical program-counter leakage from preemption-point traces.
+Week 3 builds a host-side C tracing library and instruments two toy programs. The tracer records when execution reaches a selected observation point. It does **not** perform a real context switch and does **not** claim that a preemption actually happened.
 
-In a limited-preemption system, the scheduler may only preempt at selected program locations. This project asks what an observer could learn if they saw the sequence of allowed preemption-point IDs reached by a program.
-
-## Files
-
-```text
-preempt-tracer/
-  include/preempt_point.h
-  src/preempt_point.c
-  examples/thermostat_iot.c
-  examples/packet_filter.c
-  scripts/run_all.py
-  scripts/analyze_traces.py
-  results/
-  README.md
-  Makefile
-```
-
-## How to build and run
-
-From the project folder:
+## Build and run
 
 ```bash
+make clean
 make run
 ```
 
-This command:
+This builds both C examples and writes the trace output to:
 
-1. Compiles the two C examples.
-2. Runs each example over inputs 0 through 31.
-3. Writes the traces to `results/traces.csv`.
-4. Groups inputs by identical trace.
-5. Prints the number of distinct traces and the `log2(# distinct traces)` leakage bound.
-
-## Preemption point macro
-
-The C macro is:
-
-```c
-#define PREEMPT_POINT(ID) \
-    log_preempt_point((ID), __FILE__, __LINE__, __func__)
+```text
+results/week3_traces.csv
 ```
 
-Each call records that the program reached a specific preemption point ID. The macro also captures file, line, and function information automatically.
+## Trace format
 
-## Example 1: thermostat_iot
+The trace file uses event-oriented CSV:
 
-The thermostat example treats the hidden input as a simplified sensor/state value.
+```text
+example,input,sequence,point_id,file,line,function
+```
 
-The input affects:
-
-- temperature range
-- occupancy
-- fan adjustment loop count
-
-For example, if an observer sees point `2`, the observer can infer that the temperature was in the cold range. If the observer sees point `6`, the observer can infer that the room was occupied. If point `8` repeats, the observer can infer partial information about `temperature % 3`.
-
-The observer may not learn the exact input, but they can narrow the input down to a smaller equivalence class.
-
-## Example 2: packet_filter
-
-The packet filter example treats the hidden input as simplified packet metadata.
-
-The input affects:
-
-- packet type
-- payload length category
-- payload scan loop count
-
-For example, if an observer sees point `11`, the observer can infer that the packet was a control packet. If the observer sees point `17`, the observer can infer that the payload was long. Repeated point `18` leaks partial information about the payload length.
-
-## Equivalence classes
-
-An equivalence class is a group of inputs that produce the same trace.
+Each row represents one observed preemption point. The sequence number resets to `0` for each new input run.
 
 Example:
 
 ```text
-trace 1,2,7,9 -> inputs {0,6}
+thermostat,17,0,1,examples/thermostat_iot.c,35,main
 ```
 
-This means inputs `0` and `6` produced the same observable sequence of preemption-point IDs.
+## What `PREEMPT_POINT(id)` means
 
-## Leakage bound
+`PREEMPT_POINT(id)` means that execution reached a selected observation point with a stable point ID.
 
-The analyzer prints:
+It does **not** mean:
+
+* a real scheduler interrupted the program
+* a context switch happened
+* the code is running inside an RTOS
+* a real preemption occurred
+
+It is a host-side trace marker used to study which program locations are observable.
+
+## Point ID table
+
+### Thermostat example
+
+| Point ID | Meaning            |
+| -------: | ------------------ |
+|        1 | Entry point        |
+|        2 | Heat branch        |
+|        3 | Comfortable branch |
+|        4 | Cool branch        |
+|        5 | Alert branch       |
+|        6 | Exit point         |
+
+### Packet-filter example
+
+| Point ID | Meaning                        |
+| -------: | ------------------------------ |
+|       10 | Entry point                    |
+|       11 | Status-packet branch           |
+|       12 | Data-packet branch             |
+|       13 | Data payload chunk observation |
+|       14 | Rejected-packet branch         |
+|       15 | Exit point                     |
+
+## Tested finite input domains
+
+### Thermostat
+
+The thermostat example tests 32 synthetic temperatures:
 
 ```text
-upper bound = log2(# distinct traces)
+-10, -8, -6, ..., 52
 ```
 
-If there are 4 distinct traces, then the upper bound is:
+This finite input range covers heat, comfortable, cool, low-alert, and high-alert paths.
+
+### Packet filter
+
+The packet-filter example tests 24 synthetic packet inputs:
 
 ```text
-log2(4) = 2 bits
+packet_type in {0, 1, 2}
+payload_length in {0, 4, 8, 16, 24, 32, 48, 64}
 ```
 
-This does not always mean the observer learns exactly 2 bits. It means that the trace can distinguish among 4 possible trace outcomes, so the maximum possible leakage is 2 bits.
+This covers the status, data, and rejected packet branches. For data packets, the payload length controls how many payload-chunk observations occur.
+
+## Concrete examples of different traces
+
+Thermostat input `17` reaches entry, heat branch, and exit:
+
+```text
+1, 2, 6
+```
+
+Thermostat input `28` reaches entry, cool branch, and exit:
+
+```text
+1, 4, 6
+```
+
+So the point IDs distinguish heat behavior from cool behavior.
+
+Packet input `0:24` reaches entry, status-packet branch, and exit:
+
+```text
+10, 11, 15
+```
+
+Packet input `1:24` reaches entry, data-packet branch, three payload-chunk observations, and exit:
+
+```text
+10, 12, 13, 13, 13, 15
+```
+
+So the point IDs distinguish packet type, and repeated point `13` reveals a selected loop observation.
+
+## Source information recorded
+
+Each event records:
+
+* source file
+* source line
+* function name
+
+This is useful for debugging, confirming where each point ID came from, and later interpreting trace differences.
+
+## Determinism assumptions
+
+The examples are deterministic because they use only command-line arguments and fixed branch logic. There is no randomness, real sensor input, networking, timing source, or concurrency in the host-side examples. The same input should produce the same trace on repeated runs.
+
+## Week 3 scope
+
+This week focuses on reliable raw trace collection. Grouping inputs into equivalence classes and calculating information leakage are future analysis tasks.
