@@ -6,7 +6,7 @@ BUILD_DIR=build
 THERMOSTAT=$(BUILD_DIR)/thermostat_iot
 PACKET_FILTER=$(BUILD_DIR)/packet_filter
 
-.PHONY: all run week3 clean check
+.PHONY: all run week3 week4 clean check
 
 all: $(THERMOSTAT) $(PACKET_FILTER)
 
@@ -24,6 +24,9 @@ run: all
 
 week3: run
 
+week4: run
+	python3 scripts/analyze_traces.py
+
 check: all
 	./$(THERMOSTAT) 17
 	./$(PACKET_FILTER) 1 24
@@ -31,3 +34,4 @@ check: all
 clean:
 	rm -rf $(BUILD_DIR)
 	rm -f results/week3_traces.csv
+	rm -f results/week4_leakage_comparison.csv

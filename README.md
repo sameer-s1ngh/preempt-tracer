@@ -1,140 +1,202 @@
-# Preempt Tracer — Week 3
+# Preempt Tracer — Week 4
 
-Week 3 builds a host-side C tracing library and instruments two toy programs. The tracer records when execution reaches a selected observation point. It does **not** perform a real context switch and does **not** claim that a preemption actually happened.
+This project studies how much information can leak from observable preemption-point traces in small C programs. Week 3 produced raw event traces from a host-side C harness. Week 4 extends that pipeline by reconstructing ordered traces, applying observation policies, grouping inputs into equivalence classes, and measuring leakage.
+
+The main question is:
+
+> How does changing which preemption points are visible change what an observer can learn about the hidden input?
 
 ## Build and run
 
+Run:
+
 ```bash
 make clean
-make run
+make week4
 ```
 
-This builds both C examples and writes the trace output to:
+This builds the C examples, runs the finite input sweep, creates a fresh raw trace file, and runs the Week 4 analyzer.
+
+Generated files:
 
 ```text
 results/week3_traces.csv
+results/week4_leakage_comparison.csv
 ```
 
-## Trace format
+## Pipeline
 
-The trace file uses event-oriented CSV:
+```text
+C harness
+-> raw event file
+-> Python loader/adapter
+-> ordered point-ID trace
+-> observation policy filter
+-> equivalence classes
+-> leakage metrics
+```
+
+The raw Week 3 event file is left unchanged. Week 4 derives filtered traces and summary measurements from that raw file.
+
+## Raw trace format
+
+The Week 3 harness writes event-oriented CSV:
 
 ```text
 example,input,sequence,point_id,file,line,function
 ```
 
-Each row represents one observed preemption point. The sequence number resets to `0` for each new input run.
+Each row is one observed `PREEMPT_POINT(id)` event.
 
 Example:
 
 ```text
 thermostat,17,0,1,examples/thermostat_iot.c,35,main
+thermostat,17,1,2,examples/thermostat_iot.c,40,main
+thermostat,17,2,6,examples/thermostat_iot.c,55,main
 ```
 
-## What `PREEMPT_POINT(id)` means
+This becomes the ordered point-ID trace:
 
-`PREEMPT_POINT(id)` means that execution reached a selected observation point with a stable point ID.
+```text
+1, 2, 6
+```
 
-It does **not** mean:
+## Loader behavior
 
-* a real scheduler interrupted the program
-* a context switch happened
-* the code is running inside an RTOS
-* a real preemption occurred
+The analyzer reads `results/week3_traces.csv`, groups rows by:
 
-It is a host-side trace marker used to study which program locations are observable.
+```text
+example + input
+```
 
-## Point ID table
+Then it sorts each group by `sequence` and extracts the ordered `point_id` tuple. That tuple is the raw trace for one execution.
 
-### Thermostat example
+## Observation policies
 
-| Point ID | Meaning            |
-| -------: | ------------------ |
-|        1 | Entry point        |
-|        2 | Heat branch        |
-|        3 | Comfortable branch |
-|        4 | Cool branch        |
-|        5 | Alert branch       |
-|        6 | Exit point         |
+Week 4 compares three policies:
 
-### Packet-filter example
+| Policy    | Meaning                                     |
+| --------- | ------------------------------------------- |
+| `coarse`  | Shows only entry/exit style points          |
+| `limited` | Shows selected meaningful preemption points |
+| `all`     | Shows every manually instrumented point ID  |
 
-| Point ID | Meaning                        |
-| -------: | ------------------------------ |
-|       10 | Entry point                    |
-|       11 | Status-packet branch           |
-|       12 | Data-packet branch             |
-|       13 | Data payload chunk observation |
-|       14 | Rejected-packet branch         |
-|       15 | Exit point                     |
+The `all` policy does **not** mean every machine instruction. It only means every point currently instrumented in the C examples.
 
-## Tested finite input domains
+### Thermostat policies
+
+```text
+coarse: {1, 6}
+limited: {1, 2, 4, 5, 6}
+all: every thermostat point
+```
+
+### Packet-filter policies
+
+```text
+coarse: {10, 15}
+limited: {10, 11, 12, 14, 15}
+all: every packet-filter point
+```
+
+## Equivalence classes
+
+After applying a policy, the analyzer groups inputs by identical visible traces.
+
+Example:
+
+```text
+trace 1,2,6 -> inputs {16,17}
+```
+
+This means inputs `16` and `17` look the same to the observer under that policy. The observer may not know the exact input, but can narrow it to that group.
+
+## Leakage metrics
+
+The analyzer reports:
+
+| Field           | Meaning                                                  |
+| --------------- | -------------------------------------------------------- |
+| `inputs`        | Number of tested inputs                                  |
+| `traces`        | Number of distinct visible traces                        |
+| `upper_bits`    | `log2(number of distinct traces)`                        |
+| `mutual_info`   | Empirical mutual information under a uniform input prior |
+| `largest_class` | Size of the largest equivalence class                    |
+
+`upper_bits` measures how many visible trace outcomes the observer can distinguish. `mutual_info` estimates how much the visible trace reduces uncertainty about the input, assuming all tested inputs are equally likely.
+
+These are empirical measurements for the tested finite domains, not proofs about all possible executions.
+
+## Tested input domains
 
 ### Thermostat
-
-The thermostat example tests 32 synthetic temperatures:
 
 ```text
 -10, -8, -6, ..., 52
 ```
 
-This finite input range covers heat, comfortable, cool, low-alert, and high-alert paths.
+This gives 32 synthetic temperature inputs covering heat, comfortable, cool, low-alert, and high-alert behavior.
 
 ### Packet filter
-
-The packet-filter example tests 24 synthetic packet inputs:
 
 ```text
 packet_type in {0, 1, 2}
 payload_length in {0, 4, 8, 16, 24, 32, 48, 64}
 ```
 
-This covers the status, data, and rejected packet branches. For data packets, the payload length controls how many payload-chunk observations occur.
+This gives 24 inputs covering status packets, data packets, rejected packets, and repeated payload chunk observations.
 
-## Concrete examples of different traces
+## Concrete leakage examples
 
-Thermostat input `17` reaches entry, heat branch, and exit:
+For thermostat, the trace:
 
 ```text
 1, 2, 6
 ```
 
-Thermostat input `28` reaches entry, cool branch, and exit:
+reveals that the input followed the heat branch.
+
+The trace:
 
 ```text
 1, 4, 6
 ```
 
-So the point IDs distinguish heat behavior from cool behavior.
+reveals that the input followed the cool branch.
 
-Packet input `0:24` reaches entry, status-packet branch, and exit:
-
-```text
-10, 11, 15
-```
-
-Packet input `1:24` reaches entry, data-packet branch, three payload-chunk observations, and exit:
+For packet filter, the trace:
 
 ```text
 10, 12, 13, 13, 13, 15
 ```
 
-So the point IDs distinguish packet type, and repeated point `13` reveals a selected loop observation.
+reveals a data-packet path with three visible chunk observations. This leaks information about both packet type and payload length.
 
-## Source information recorded
+## Design lesson
 
-Each event records:
+The main lesson is that visible preemption points can make more program behaviors distinguishable. Some points may be useful for scheduling, but they can also reveal control-flow information.
 
-* source file
-* source line
-* function name
+If the goal were to reduce leakage, one point I would consider hiding or relocating first is:
 
-This is useful for debugging, confirming where each point ID came from, and later interpreting trace differences.
+```text
+13 = data payload chunk observation
+```
 
-## Determinism assumptions
+Because it repeats based on payload length, it can reveal more than just the packet branch. It also reveals partial information about payload size.
 
-The examples are deterministic because they use only command-line arguments and fixed branch logic. There is no randomness, real sensor input, networking, timing source, or concurrency in the host-side examples. The same input should produce the same trace on repeated runs.
+## Limitations
 
-## Week 3 scope
+These results are limited by:
 
-This week focuses on reliable raw trace collection. Grouping inputs into equivalence classes and calculating information leakage are future analysis tasks.
+* finite synthetic input domains
+* small toy examples
+* manually chosen point IDs
+* deterministic execution
+* uniform input prior
+* host-side tracing instead of a real RTOS
+* `all` meaning all instrumented points, not all machine instructions
+
+## Week 4 summary
+
+Week 4 connects the raw C trace harness to leakage measurement. The analyzer reconstructs ordered traces, applies coarse, limited, and all-points policies, groups inputs by identical visible traces, and reports leakage metrics. The results show that what an observer can learn depends directly on which preemption points are visible.
